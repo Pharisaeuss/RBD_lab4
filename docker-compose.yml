@@ -1,0 +1,57 @@
+services:
+  kafka:
+    image: docker.io/apache/kafka:3.8.0
+    container_name: lab4-kafka
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 6
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
+    volumes:
+      - lab4_kafka_data:/var/lib/kafka/data
+
+  cassandra:
+    image: docker.io/library/cassandra:4.1
+    container_name: lab4-cassandra
+    ports:
+      - "9043:9042"
+    environment:
+      CASSANDRA_CLUSTER_NAME: "Lab4Cluster"
+      MAX_HEAP_SIZE: "768M"
+      HEAP_NEWSIZE: "192M"
+    volumes:
+      - lab4_cassandra_data:/var/lib/cassandra
+
+  app:
+    build: .
+    image: lab4-app
+    container_name: lab4-app
+    depends_on:
+      - kafka
+      - cassandra
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      CASSANDRA_HOST: cassandra
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+    command: ["sleep", "infinity"]
+
+volumes:
+  lab4_kafka_data:
+  lab4_cassandra_data:

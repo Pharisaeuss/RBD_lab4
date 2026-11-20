@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сонячні електростанції Київської області: Event Sourcing і 5-хв вікна</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,.10); --neutral-mark: #b4b2aa;
+    --good: #006300; --critical: #d03b3b; --wash: rgba(11,11,11,.05);
+    --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+    --series-4: #eda100; --series-5: #e87ba4; --series-6: #008300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10); --neutral-mark: #5a5954;
+      --good: #0ca30c; --critical: #d03b3b; --wash: rgba(255,255,255,.06);
+      --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+      --series-4: #c98500; --series-5: #d55181; --series-6: #008300;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,.10); --neutral-mark: #5a5954;
+    --good: #0ca30c; --critical: #d03b3b; --wash: rgba(255,255,255,.06);
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --series-4: #c98500; --series-5: #d55181; --series-6: #008300;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 56px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0; }
+  h2 { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  .sub { color: var(--ink-2); font-size: 13px; margin: 0 0 12px; }
+  .filters { display: flex; gap: 12px; align-items: center; margin: 16px 0 20px; flex-wrap: wrap; }
+  select, input, button { font: inherit; color: var(--ink); background: var(--surface);
+         border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
+  button { cursor: pointer; } button:hover { background: var(--wash); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile, .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .tile .label { color: var(--ink-2); font-size: 13px; }
+  .tile .value { font-size: 28px; font-weight: 600; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(480px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .wide { grid-column: 1 / -1; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid); }
+  th { color: var(--ink-2); font-weight: 500; } td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { max-height: 280px; overflow: auto; }
+  .form { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0 12px; }
+  .note { color: var(--ink-2); font-size: 12px; margin-top: 8px; }
+  .ok::before { content: "✓ "; color: var(--good); font-weight: 700; }
+  .bad::before { content: "✕ "; color: var(--critical); font-weight: 700; }
+</style>
+</head>
+<body>
+<main id="root">
+  <header>
+    <div>
+      <h1>Сонячні електростанції Київської області</h1>
+      <p class="sub">500 панелей · кожні 30 с (~17 msg/s) · Tumbling Windows 5 хв · Event Sourcing (AGGREGATE_CREATED / THRESHOLD_EXCEEDED)</p>
+    </div>
+    <button id="theme" type="button">Тема</button>
+  </header>
+
+  <div class="filters">
+    <label>Зона <select id="zone"><option value="">Усі зони</option></select></label>
+    <label>Панель <input id="panel" value="P00001" size="10"></label>
+    <button id="refresh" type="button">Оновити</button>
+    <span class="sub" id="stamp" style="margin:0"></span>
+  </div>
+
+  <section class="tiles" id="tiles"></section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Накопичувальний стан панелі (device_state)</h2>
+      <p class="sub">Поточна статистика за панеллю з State Store</p>
+      <div id="state-out"></div>
+    </div>
+    <div class="card">
+      <h2>Replay стану з журналу подій (event_log)</h2>
+      <p class="sub">Відтворення стану та перевірка подій AGGREGATE_CREATED і THRESHOLD_EXCEEDED</p>
+      <div class="form">
+        <button id="run-replay" type="button">Виконати Replay</button>
+      </div>
+      <div id="replay-out"></div>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <h2>Історія подій панелі (event_log)</h2>
+    <p class="sub">Append-only журнал подій AGGREGATE_CREATED та THRESHOLD_EXCEEDED</p>
+    <div class="scroll" id="events-out"></div>
+  </section>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const ZONES = ["Бориспільська", "Броварська", "Фастівська", "Вишгородська", "Білоцерківська", "Ірпінська"];
+const fmt = (n, d = 0) => Number(n ?? 0).toLocaleString("uk-UA", { maximumFractionDigits: d, minimumFractionDigits: d });
+const api = (p, opts) => fetch(p, opts).then((r) => (r.ok ? r.json() : Promise.reject(new Error(p + " -> " + r.status))));
+
+function el(tag, props = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) k === "class" ? (e.className = v) : e.setAttribute(k, v);
+  for (const kid of kids) e.append(kid);
+  return e;
+}
+
+async function loadPanel() {
+  const pid = $("#panel").value.trim() || "P00001";
+  try {
+    const [st, evs] = await Promise.all([
+      api("/api/state/" + encodeURIComponent(pid)).catch(() => null),
+      api("/api/events/" + encodeURIComponent(pid) + "?limit=50").catch(() => ({ events: [] })),
+    ]);
+
+    const aggCount = (evs.events || []).filter((e) => e.event_type === "AGGREGATE_CREATED").length;
+    const thrCount = (evs.events || []).filter((e) => e.event_type === "THRESHOLD_EXCEEDED").length;
+
+    const tileData = [
+      ["Панель", pid],
+      ["Зона", st?.zone || "–"],
+      ["Загальна енергія, кВт·год", fmt(st?.total_energy_kwh, 4)],
+      ["Макс. потужність, кВт", fmt(st?.max_power_kw, 3)],
+      ["Подій AGGREGATE_CREATED", fmt(aggCount)],
+      ["Подій THRESHOLD_EXCEEDED", fmt(thrCount)],
+    ];
+    $("#tiles").replaceChildren(...tileData.map(([l, v]) =>
+      el("div", { class: "tile" }, el("div", { class: "label" }, l), el("div", { class: "value" }, v))
+    ));
+
+    if (st) {
+      const tb = el("tbody");
+      const addRow = (k, v) => tb.append(el("tr", {}, el("td", {}, k), el("td", { class: "n" }, v)));
+      addRow("Кількість 5-хв вікон", fmt(st.windows_count));
+      addRow("Кількість вимірів", fmt(st.samples_count));
+      addRow("Середня потужність, кВт", fmt(st.avg_power_kw, 4));
+      addRow("Мін. потужність, кВт", fmt(st.min_power_kw, 4));
+      addRow("Макс. потужність, кВт", fmt(st.max_power_kw, 4));
+      addRow("Накопичена енергія, кВт·год", fmt(st.total_energy_kwh, 6));
+      addRow("Перевищень порогу", fmt(st.threshold_exceeded_count));
+      $("#state-out").replaceChildren(el("table", {}, tb));
+    } else {
+      $("#state-out").replaceChildren(el("p", { class: "sub" }, "Стан ще не сформовано (потрібне завершення хоча б одного 5-хв вікна)."));
+    }
+
+    const list = evs.events || [];
+    if (list.length) {
+      const tbl = el("table");
+      tbl.append(el("thead", {}, el("tr", {}, ...["Час події", "Тип події", "Вікно (початок)", "Енергія, кВт·год", "Деталі"].map((h) => el("th", {}, h)))));
+      const body = el("tbody");
+      list.slice().reverse().forEach((e) => {
+        body.append(el("tr", {},
+          el("td", {}, e.event_ts || "–"),
+          el("td", {}, e.event_type),
+          el("td", {}, e.window_start || "–"),
+          el("td", { class: "n" }, fmt(e.energy_kwh, 6)),
+          el("td", {}, e.payload || "")
+        ));
+      });
+      tbl.append(body);
+      $("#events-out").replaceChildren(tbl);
+    } else {
+      $("#events-out").replaceChildren(el("p", { class: "sub" }, "Подій для цієї панелі поки немає."));
+    }
+
+    $("#stamp").textContent = "Оновлено " + new Date().toLocaleTimeString("uk-UA");
+  } catch (err) {
+    $("#stamp").textContent = "Помилка: " + err.message;
+  }
+}
+
+$("#run-replay").addEventListener("click", async () => {
+  const pid = $("#panel").value.trim() || "P00001";
+  $("#replay-out").textContent = "Виконується replay для " + pid + "...";
+  try {
+    const r = await api("/api/replay/" + encodeURIComponent(pid) + "?persist=true", { method: "POST" });
+    $("#replay-out").replaceChildren(
+      el("p", {}, el("span", { class: "ok" }, `Відтворено з ${fmt(r.events_processed)} подій (пропущено дублікатів: ${fmt(r.duplicates_skipped)})`)),
+      el("p", { class: "note" }, `Вікон: ${fmt(r.state.windows_count)}, Енергія: ${fmt(r.state.total_energy_kwh, 6)} кВт·год, Перевищень порогу: ${fmt(r.state.threshold_exceeded_count)}`)
+    );
+    await loadPanel();
+  } catch (err) {
+    $("#replay-out").replaceChildren(el("p", { class: "bad" }, "Немає подій для replay або помилка: " + err.message));
+  }
+});
+
+ZONES.forEach((z) => $("#zone").append(el("option", { value: z }, z)));
+$("#refresh").addEventListener("click", loadPanel);
+$("#panel").addEventListener("change", loadPanel);
+$("#theme").addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  document.documentElement.dataset.theme = cur === "dark" ? "light" : "dark";
+});
+
+loadPanel();
+setInterval(loadPanel, 15000);
+</script>
+</body>
+</html>

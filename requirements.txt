@@ -1,0 +1,7 @@
+faust-streaming>=0.11
+confluent-kafka>=2.3
+cassandra-driver>=3.29
+fastapi>=0.110
+uvicorn>=0.29
+tzdata
+cramjam

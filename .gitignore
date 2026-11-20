@@ -1,0 +1,11 @@
+out/
+solar-kyiv--data/
+lab4-grid--data/
+pycache/
+*.py[cod]
+.venv/
+venv/
+.DS_Store
+Thumbs.db
+.vscode
+lab4_report.md
